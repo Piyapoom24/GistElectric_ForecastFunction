@@ -1,15 +1,16 @@
-import numpy as np
-import pandas as pd
-import requests
-from tqdm import tqdm
-from pmdarima import auto_arima
-import warnings
-warnings.filterwarnings('ignore')
+import numpy as np # เรียกใช้ Library
+import pandas as pd # เรียกใช้ Library
+import requests # เรียกใช้ Library
+from tqdm import tqdm # เรียกใช้ Library
+from pmdarima import auto_arima # เรียกใช้ Library
+from sklearn.metrics import mean_absolute_percentage_error # เรียกใช้ Library
+import warnings # เรียกใช้ Library
+warnings.filterwarnings('ignore') # ปิดข้อความการแจ้งเตือนที่ไม่ใช้ error และผลัพธ์
 
 # ฟังก์ชันดึงข้อมูลจาก API และแปลง พ.ศ. เป็น ค.ศ.
 def fetch_data_from_api(api_url): # กำหนด input ของฟังก์ชันโดยรับ API url
-    response = requests.get(api_url, timeout=10) #ขอชุดข้อมูลผ่าน API url โดยกำหนดเวลารอในการขอข้อมูล 10 วิทนาที
-    response.raise_for_status() #เช็ค API status
+    response = requests.get(api_url, timeout=10) # ขอชุดข้อมูลผ่าน API url โดยกำหนดเวลารอในการขอข้อมูล 10 วิทนาที
+    response.raise_for_status() # เช็ค API status
     data = response.json() # แปลงข้อมูลจาก API เป็น json file
 
     df = pd.json_normalize(data['features']) # แปลง json file ให้เป็นในรูปแบบ Dataframe(ตาราง)
@@ -38,6 +39,11 @@ class SarimaModel_SumAll:
         self.train = None #กำหนดตัวแปรว่างๆไว้เพื่อเก็บค่า
         self.model = None #กำหนดตัวแปรว่างๆไว้เพื่อเก็บค่า
         self.forecasts = None #กำหนดตัวแปรว่างๆไว้เพื่อเก็บค่า
+        self.mape = None #กำหนดตัวแปรว่างๆไว้เพื่อเก็บค่า
+        self.eval_train = None #กำหนดตัวแปรว่างๆไว้เพื่อเก็บค่า
+        self.test = None #กำหนดตัวแปรว่างๆไว้เพื่อเก็บค่า
+        self.eval_model = None #กำหนดตัวแปรว่างๆไว้เพื่อเก็บค่า
+        self.eval_forecasts =None #กำหนดตัวแปรว่างๆไว้เพื่อเก็บค่า
     
     def train_model(self): #ฟังก์ชันในการ train model
         full_data = self.df #กำหนดัตวแปร โดยให้ input เป็นชื่อ full_data (กันความสับสน)
@@ -50,8 +56,8 @@ class SarimaModel_SumAll:
         #train Arima(Seasonal) model โดยใช้ self.train และเก็บ model ไว้ใน self.model
         self.model = auto_arima(
             self.train,
-            seasonal=True,
-            m=12,
+            seasonal=True, #ใช้ Seasonal
+            m=12, #บ่งบอกถึงจำนวนรอบในการเกิด Seasonal
             d=None,
             max_d=1,
             D=1,
@@ -67,6 +73,33 @@ class SarimaModel_SumAll:
     def forecast(self): #ฟังก์ชันในการพยากรณ์ 
         self.forecasts = self.model.predict(n_periods=6) #ใช้model ที่เก็บไว้ในตัวแปร self.model พยากรณ์ 6เดือนถัดไป แล้วเก็บค่าไว้ใน self.forecasts
         return self.forecasts
+
+    def evaluation(self): #ฟังก์ชันในการประเมินผลของโมเดล
+        self.eval_train = self.data[:-6] # แบ่งข้อมูล: ใช้ทุกค่าก่อน 6 ตัวสุดท้ายเป็นข้อมูลสำหรับ train เก็บไว้ในตัวแปร self.eval_train
+        self.test = self.data[-6:] # ใช้ 6 ตัวสุดท้ายของข้อมูลเป็นชุด test (สำหรับตรวจสอบความแม่นยำ) เก็บไว้ในตัวแปร self.test
+
+        #train Arima(Seasonal) model โดยใช้ self.eval_train และเก็บ model ไว้ใน self.eval_model
+        self.eval_model = auto_arima(
+            self.eval_train,
+            seasonal=True, #ใช้ Seasonal
+            m=12, #บ่งบอกถึงจำนวนรอบในการเกิด Seasonal
+            d=None,
+            max_d=1,
+            D=1,
+            max_p=4,
+            max_q=4,
+            information_criterion='aic',
+            trend='ct',
+            suppress_warnings=True,
+            error_action='ignore'
+        )
+
+        # ใช้โมเดลที่ได้ ทำนายข้อมูล 6 ช่วงล่วงหน้า (เท่ากับจำนวน test) โดยเก็บไว้ในตัวแปร self.eval_forecasts
+        self.eval_forecasts = self.eval_model.predict(n_periods = 6) 
+
+        # คำนวณค่าความคลาดเคลื่อนเฉลี่ยแบบเปอร์เซ็นต์ (MAPE) ระหว่างค่าจริงกับค่าทำนาย โดยเก็บไว้ในตัวแปร self.mape
+        self.mape = mean_absolute_percentage_error(self.test, self.eval_forecasts)
+        return self.mape
     
     def forecast_to_api(self): #ฟังก์ชันในการส่งค่าพยากรณ์ไปยัง API
         last_date = self.train.index[-1] #ดึงวันสุดท้ายของ train data
@@ -82,6 +115,13 @@ class SarimaModel_SumAll:
 
         forecast_data = forecast_df.to_dict(orient='records') #แปลงข้อมูลให้อยู่ในรูปแบบ dict 
         return send_forecast_to_api('http://localhost:3000/api/forecast/buildingsum', forecast_data) #ส่งข้อมูลไปยัง API 
+    
+    def eval_to_api(self):
+        #เตรียมรูปแบบข้อมูล โดยใช้ค่าประเมินโมเดล จาก self.mape 
+        result = {
+            'performance': self.mape # ใส่ค่าความแม่นยำ (MAPE) ของอาคารทั้งหมดใน key 'performance'
+            }
+        return send_forecast_to_api('http://localhost:3000/api/eval/buildingsum', result) #ส่งข้อมูลไปยัง API
 
 #คลาสโมเดลของแต่ละอาคาร 90อาคาร
 class SarimaModel_90_Building:
@@ -91,6 +131,10 @@ class SarimaModel_90_Building:
         self.models = {} #กำหนดตัวแปรว่างๆไว้เพื่อเก็บค่า
         self.forecasts = {} #กำหนดตัวแปรว่างๆไว้เพื่อเก็บค่า
         self.trains = {} #กำหนดตัวแปรว่างๆไว้เพื่อเก็บค่า
+        self.eval_model = {} #กำหนดตัวแปรว่างๆไว้เพื่อเก็บค่า
+        self.eval_train = {} #กำหนดตัวแปรว่างๆไว้เพื่อเก็บค่า
+        self.tests = {} #กำหนดตัวแปรว่างๆไว้เพื่อเก็บค่า
+        self.mape = {} #กำหนดตัวแปรว่างๆไว้เพื่อเก็บค่า
     
     def train_model(self): #ฟังก์ชันในการ train model
         full_data = self.fdata #กำหนดัตวแปร โดยให้ input เป็นชื่อ full_data (กันความสับสน)
@@ -118,8 +162,8 @@ class SarimaModel_90_Building:
             #train Arima(Seasonal) model 
             model = auto_arima(
                 train,
-                seasonal=True,
-                m=12,
+                seasonal=True, #ใช้ Seasonal
+                m=12, #บ่งบอกถึงจำนวนรอบในการเกิด Seasonal
                 d=None,
                 max_d=1,
                 D=1,
@@ -144,6 +188,44 @@ class SarimaModel_90_Building:
                 except Exception as e: #ถ้าไม่มีให้แจ้งmodelที่หายไป
                     print(f"Forecast failed for building {i}: {e}") 
         return self.forecasts
+
+    def evaluation(self):
+        # วนลูปประเมินโมเดลสำหรับแต่ละอาคาร โดยใช้ หมายเลข building_id (1-90)
+        for i in tqdm(range(1, 91)): #ให้ i แทน หมายเลข building_id ในแต่ละรอบตั้งแต่ 1-90
+            train = self.data[i]["unit"][:-6] # ใช้ข้อมูลทั้งหมดก่อน 6 ตัวสุดท้ายเป็นชุด train เก็บไว้ในตัวแปร train
+            test = self.data[i]["unit"][-6:] # ใช้ 6 ตัวสุดท้ายเป็นชุด test เก็บไว้ในตัวแปร test
+            
+            #train Arima(Seasonal) model โดยใช้ train และเก็บ model ไว้ในตัวแปร e_model
+            e_model = auto_arima(
+                train,
+                seasonal=True, #ใช้ Seasonal
+                m=12, #บ่งบอกถึงจำนวนรอบในการเกิด Seasonal
+                d=None,
+                max_d=1,
+                D=1,
+                max_p=4,
+                max_q=4,
+                information_criterion='aic',
+                stepwise=True,
+                suppress_warnings=True,
+                error_action='ignore'
+            )
+            self.eval_model[i] = e_model # เก็บโมเดลของอาคารแต่ละหลัง ไว้ในตัวแปร self.eval_model
+            self.eval_train[i] = train # เก็บข้อมูล train ของแต่ละอาคาร ไว้ในตัวแปร self.eval_train
+            self.tests[i] = test # เก็บข้อมูล test ของแต่ละอาคาร ไว้ในตัวแปร self.tests
+
+        # วนลูปอีกครั้งเพื่อคำนวณค่าความแม่นยำ (MAPE) สำหรับแต่ละโมเดล
+        for i in range(1, 91): #ให้ i แทน หมายเลข building_id ในแต่ละรอบตั้งแต่ 1-90
+            eval_model = self.eval_model.get(i) #นำโมเดลที่เก็บไว้ในตัวแปร self.eval_model มาใช้
+            tests = self.tests.get(i) #นำข้อมูลชุด test ที่เก็บไว้ในตัวแปร self.tests มาใช้
+            if eval_model is not None:
+                try:
+                    forecast = eval_model.predict(n_periods=6) # ทำนาย 6 ช่วงเวลา
+                    self.mape[i] = mean_absolute_percentage_error(tests, forecast) #คำนวณค่าความคลาดเคลื่อนเฉลี่ยแบบเปอร์เซ็นต์ (MAPE)
+                except Exception as e:
+                    print(f"Forecast failed for building {i}: {e}")
+                    self.mape[i] = None # กำหนดค่า MAPE เป็น None หากทำนายไม่ได้
+        return self.mape
     
     def forecast_to_api(self): #ฟังก์ชันในการส่งค่าพยากรณ์ไปยัง API
         forecast_data = [] #สร้างlistไว้เก็บค่าพยากรณ์ของแต่ละอาคาร
@@ -162,6 +244,16 @@ class SarimaModel_90_Building:
                         'unit': float(forecast.iloc[j])  # ใส่ค่าพยากรณ์ในรูป float สำหรับ JSON
                     })
         return send_forecast_to_api('http://localhost:3000/api/forecast/90building', forecast_data)
+    
+    def eval_to_api(self):
+        result = {} # สร้าง dictionary สำหรับเก็บผลลัพธ์ของอาคารแต่ละหลัง
+        for i in range(1, 91): # วนลูปอาคารทั้งหมด (building ID ตั้งแต่ 1 ถึง 90)
+            mape = self.mape.get(i) # ดึงค่า MAPE ของอาคารแต่ละหลัง
+            forecast_df = pd.DataFrame({
+                'performance': [mape] # ใส่ค่า MAPE ลงไปในคอลัมน์ 'performance'
+            })
+            result[i] = forecast_df.to_dict(orient='records') # แปลง DataFrame เป็น list of dict เพื่อให้พร้อมส่งเป็น JSON
+        return send_forecast_to_api('http://localhost:3000/api/eval/ninetybuilding', result)
 
 #----------------------------------------------------------------------------------------------------------
 
@@ -177,12 +269,18 @@ df = fetch_data_from_api(api_url)
 Full_data = SarimaModel_SumAll(df) #เรียกใช้ คลาสสำหรับการพยากรณ์ โดยใช้ ข้อมูลที่แปลงมาจากข้อที่2
 Full_data.train_model() #เรียกใช้ method train_model เพื่อtrain model
 Full_data.forecast() #เรียกใช้ method forecast เพื่อพยากรณ์ค่า
+Full_data.evaluation() #เรียกใช้ method evaluation เพื่อประเมินผลของโมเดล
 response_sum = Full_data.forecast_to_api() #เรียกใช้ method forecast_to_api เพื่อส่งค่าพยากรณ์ไปยัง API
-print("BuildingSum forecast response:", response_sum) #ส่งค่าพยากรณ์ไปยัง API
+eval_sum = Full_data.eval_to_api() # ส่งผลประเมินความแม่นยำของแต่ละอาคารไปยัง API
+print("BuildingSum forecast response:", response_sum) # แสดงผลลัพธ์ที่ส่งไปยัง API (forecast)
+print("BuildingSum evaluation response:", eval_sum) # แสดงผลลัพธ์ที่ส่งไปยัง API (evaluation)
 
 # 3.2) พยากรณ์สำหรับแต่ละอาคาร
 Building_data = SarimaModel_90_Building(df) #เรียกใช้ คลาสสำหรับการพยากรณ์ โดยใช้ ข้อมูลที่แปลงมาจากข้อที่2
 Building_data.train_model() #เรียกใช้ method train_model เพื่อtrain model
-Building_data.forecast() #เรียกใช้ method forecast เพื่อพยากรณ์ค่า
+Building_data.forecast() #เรียกใช้ method forecast เพื่อพยากรณ์ค่า 
+Building_data.evaluation() #เรียกใช้ method evaluation เพื่อประเมินผลของโมเดล
 response_90 = Building_data.forecast_to_api() #เรียกใช้ method forecast_to_api เพื่อส่งค่าพยากรณ์ไปยัง API
-print("90Building forecast response:", response_90) #ส่งค่าพยากรณ์ไปยัง API
+eval_90 = Building_data.eval_to_api() # ส่งผลประเมินความแม่นยำของแต่ละอาคารไปยัง API
+print("90Building forecast response:", response_90) # แสดงผลลัพธ์ที่ส่งไปยัง API (forecast)
+print("90Building evaluation response:", eval_90) # แสดงผลลัพธ์ที่ส่งไปยัง API (evaluation)
